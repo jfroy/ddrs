@@ -1,18 +1,14 @@
 # ddrs
 
-Read DDR5 memory timings, clock frequencies, and DIMM information on AMD AM5
-systems (Zen4 / Zen5) from Linux.
+Read DDR5 memory timings, clock frequencies, and DIMM information on AMD AM5 systems (Zen4 / Zen5) from Linux.
 
 ## Features
 
-- **DDR5 timings** — primary, secondary, tertiary, refresh, PHY, preamble, and
-  mode register timings from UMC SMN registers
-- **Clock frequencies** — MCLK, FCLK, and UCLK read from the SMU Power
-  Management table, plus computed FCLK:MCLK ratio
-- **Channel & DIMM info** — per-channel capacity, per-DIMM rank (SR/DR),
-  capacity, and model string (manufacturer + part number from SMBIOS)
-- **Automatic backend selection** — prefers the kernel module when available,
-  falls back to sysfs PCI config space
+- **DDR5 timings** — primary, secondary, tertiary, refresh, PHY, preamble, and mode register timings from UMC SMN registers
+- **Clock frequencies** — MCLK, FCLK, and UCLK read from the SMU Power Management table, plus computed FCLK:MCLK ratio
+- **Channel & DIMM info** — per-channel capacity, per-DIMM rank (SR/DR), capacity, and model string (manufacturer + part number from SMBIOS)
+- **JSON output** — `--json` for machine-readable output on stdout; diagnostic messages always go to stderr
+- **Automatic backend selection** — prefers the kernel module when available, falls back to sysfs PCI config space
 
 ## Components
 
@@ -23,14 +19,8 @@ systems (Zen4 / Zen5) from Linux.
 
 The userspace program supports two backends for SMN access:
 
-1. **Kernel module** (`/dev/amd_smn`) — preferred; provides
-   mutex-protected SMN access and a dedicated ioctl for reading the
-   SMU PM table (required for clock frequencies). All ioctls require
-   `CAP_SYS_ADMIN`.
-2. **Sysfs PCI config space**
-   (`/sys/bus/pci/devices/0000:00:00.0/config`) — fallback, requires
-   root, no locking. Clock frequencies are not available with this
-   backend.
+1. **Kernel module** (`/dev/amd_smn`) — preferred; provides mutex-protected SMN access and a dedicated ioctl for reading the SMU PM table (required for clock frequencies). All ioctls require `CAP_SYS_ADMIN`.
+2. **Sysfs PCI config space** (`/sys/bus/pci/devices/0000:00:00.0/config`) — fallback, requires root, no locking. Clock frequencies are not available with this backend.
 
 ## Building
 
@@ -86,6 +76,12 @@ sudo ./target/release/ddrs --channel 0
 
 # Skip clock frequency reading (useful with sysfs backend):
 sudo ./target/release/ddrs --no-clocks
+
+# Machine-readable JSON output:
+sudo ./target/release/ddrs --json
+
+# JSON without diagnostics on stderr:
+sudo ./target/release/ddrs --json 2>/dev/null
 ```
 
 ### Unload the kernel module
@@ -105,42 +101,24 @@ Both require an AM5 motherboard with DDR5 memory.
 
 ### SMN register access
 
-AMD Zen processors expose memory controller configuration through the SMN
-(System Management Network) address space. SMN registers are accessed
-indirectly via PCI config space on the host bridge (bus 0, device 0, function 0):
+AMD Zen processors expose memory controller configuration through the SMN (System Management Network) address space. SMN registers are accessed indirectly via PCI config space on the host bridge (bus 0, device 0, function 0):
 
 1. Write the 32-bit SMN address to PCI config offset `0xC4`
 2. Read/write the 32-bit value at PCI config offset `0xC8`
 
-DDR5 timing registers live in the `0x50xxx` SMN range. Each UMC (Unified Memory
-Controller) channel is at an offset of `channel_index << 20`. The program
-probes up to 12 channels and reads the timing registers from each active one.
+DDR5 timing registers live in the `0x50xxx` SMN range. Each UMC (Unified Memory Controller) channel is at an offset of `channel_index << 20`. The program probes up to 12 channels and reads the timing registers from each active one.
 
 ### Clock frequencies
 
-MCLK, FCLK, and UCLK are read from the SMU (System Management Unit)
-Power Management table. The entire SMU mailbox flow runs inside the
-kernel module via the `AMD_SMN_IOC_READ_PM_TABLE` ioctl: get table
-version, obtain the 64-bit DRAM base address, transfer the table to
-DRAM, then `memremap` and copy to userspace. No arbitrary physical
-memory reads are exposed.
+MCLK, FCLK, and UCLK are read from the SMU (System Management Unit) Power Management table. The entire SMU mailbox flow runs inside the kernel module via the `AMD_SMN_IOC_READ_PM_TABLE` ioctl: get table version, obtain the 64-bit DRAM base address, transfer the table to DRAM, then `memremap` and copy to userspace. No arbitrary physical memory reads are exposed.
 
-PM table layout varies by firmware version; clock offsets are derived
-from ZenStates-Core.
+PM table layout varies by firmware version; clock offsets are derived from ZenStates-Core.
 
 ### DIMM identification
 
-DIMM manufacturer and part number are read from SMBIOS Type 17
-(Memory Device) entries using the
-[smbios-lib](https://crates.io/crates/smbios-lib) crate. Populated
-entries are matched to detected UMC channels in enumeration order.
-Rank (single/dual) and capacity are computed from UMC address
-configuration registers.
+DIMM manufacturer and part number are read from SMBIOS Type 17 (Memory Device) entries using the [smbios-lib](https://crates.io/crates/smbios-lib) crate. Populated entries are matched to detected UMC channels in enumeration order. Rank (single/dual) and capacity are computed from UMC address configuration registers.
 
-The DDR5 register map and SMU access logic are derived from the
-[ZenTimings](https://github.com/irusanov/ZenTimings) /
-[ZenStates-Core](https://github.com/irusanov/ZenStates-Core)
-project.
+The DDR5 register map and SMU access logic are derived from the [ZenTimings](https://github.com/irusanov/ZenTimings) / [ZenStates-Core](https://github.com/irusanov/ZenStates-Core) project.
 
 ## License
 
@@ -149,16 +127,10 @@ project.
 
 ## AI-generated code
 
-This project was generated by an AI coding agent powered by
-**Anthropic Claude (claude-4-opus)**. The DDR5 register map was derived from
-ZenTimings / ZenStates-Core source code; all Rust and C code was written by the
-model.
+This project was generated by an AI coding agent powered by **Anthropic Claude (claude-4-opus)**. The DDR5 register map was derived from ZenTimings / ZenStates-Core source code; all Rust and C code was written by the model.
 
 ## Credits
 
-- [ZenTimings](https://github.com/irusanov/ZenTimings) by irusanov — DDR5
-  register map and timing definitions
-- [ZenStates-Core](https://github.com/irusanov/ZenStates-Core) by irusanov —
-  core SMN/SMU access library
-- [ryzen_smu](https://gitlab.com/leogx9r/ryzen_smu) — reference for SMN access
-  via PCI config space
+- [ZenTimings](https://github.com/irusanov/ZenTimings) by irusanov — DDR5 register map and timing definitions
+- [ZenStates-Core](https://github.com/irusanov/ZenStates-Core) by irusanov — core SMN/SMU access library
+- [ryzen_smu](https://gitlab.com/leogx9r/ryzen_smu) — reference for SMN access via PCI config space
