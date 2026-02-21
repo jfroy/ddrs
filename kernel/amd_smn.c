@@ -40,9 +40,10 @@
 #define SMU_CMD_GET_DRAM_BASE     0x4
 #define SMU_CMD_GET_TABLE_VERSION 0x5
 
-#define SMU_RSP_OK      0x01
-#define SMU_TIMEOUT     8192
-#define SMU_NUM_ARGS    6
+#define SMU_RSP_OK                  0x01
+#define SMU_RSP_CMD_REJECTED_PREREQ 0xFD
+#define SMU_TIMEOUT                 8192
+#define SMU_NUM_ARGS                6
 
 #define PM_TABLE_MAX_SIZE (16 * 1024)
 
@@ -190,11 +191,11 @@ static long ioctl_read_pm_table(unsigned long arg)
 {
 	struct amd_pm_table_req req;
 	u32 args[SMU_NUM_ARGS] = {};
-	u32 status, version;
+	u32 status, version, table_size;
 	u64 dram_base;
 	u32 copy_size;
 	void *mapped;
-	int ret;
+	int ret, retries;
 
 	if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
 		return -EFAULT;
@@ -204,7 +205,7 @@ static long ioctl_read_pm_table(unsigned long arg)
 
 	mutex_lock(&smn_mutex);
 
-	/* Get PM table version. */
+	/* Get PM table version (args[0]) and size (args[1]). */
 	memset(args, 0, sizeof(args));
 	ret = smu_send_command_unlocked(SMU_CMD_GET_TABLE_VERSION, args,
 					&status);
@@ -215,23 +216,47 @@ static long ioctl_read_pm_table(unsigned long arg)
 		goto unlock;
 	}
 	version = args[0];
+	table_size = args[1];
 
-	/* Get DRAM base address for the PM table. */
+	/*
+	 * Get DRAM base address for the PM table.
+	 * ZenStates-Core passes args[0]=1, args[1]=1 for Zen2+ desktop.
+	 * The address is 64-bit: (args[1] << 32) | args[0].
+	 */
 	memset(args, 0, sizeof(args));
+	args[0] = 1;
+	args[1] = 1;
 	ret = smu_send_command_unlocked(SMU_CMD_GET_DRAM_BASE, args, &status);
 	if (ret)
 		goto unlock;
-	if (status != SMU_RSP_OK || args[0] == 0) {
+	if (status != SMU_RSP_OK) {
 		ret = -EIO;
 		goto unlock;
 	}
-	dram_base = args[0];
-
-	/* Transfer the PM table to DRAM. */
-	memset(args, 0, sizeof(args));
-	ret = smu_send_command_unlocked(SMU_CMD_TRANSFER_TABLE, args, &status);
-	if (ret)
+	dram_base = (u64)args[1] << 32 | args[0];
+	if (dram_base == 0) {
+		ret = -EIO;
 		goto unlock;
+	}
+
+	/* Transfer the PM table to DRAM, with retry on prereq rejection. */
+	for (retries = 0; retries < 3; retries++) {
+		memset(args, 0, sizeof(args));
+		ret = smu_send_command_unlocked(SMU_CMD_TRANSFER_TABLE, args,
+						&status);
+		if (ret)
+			goto unlock;
+		if (status == SMU_RSP_OK)
+			break;
+		if (status == SMU_RSP_CMD_REJECTED_PREREQ) {
+			mutex_unlock(&smn_mutex);
+			msleep(10);
+			mutex_lock(&smn_mutex);
+			continue;
+		}
+		ret = -EIO;
+		goto unlock;
+	}
 	if (status != SMU_RSP_OK) {
 		ret = -EIO;
 		goto unlock;
@@ -239,19 +264,24 @@ static long ioctl_read_pm_table(unsigned long arg)
 
 	mutex_unlock(&smn_mutex);
 
-	/* Map physical memory and copy to userspace. */
-	mapped = memremap(dram_base, req.size, MEMREMAP_WB);
+	/*
+	 * Clamp copy size to the smaller of the user buffer and the
+	 * SMU-reported table size (if available).
+	 */
+	copy_size = req.size;
+	if (table_size > 0 && table_size < copy_size)
+		copy_size = table_size;
+
+	mapped = memremap(dram_base, copy_size, MEMREMAP_WB);
 	if (!mapped)
 		return -ENOMEM;
 
-	copy_size = req.size;
 	if (copy_to_user((void __user *)req.buffer, mapped, copy_size)) {
 		memunmap(mapped);
 		return -EFAULT;
 	}
 	memunmap(mapped);
 
-	/* Write version and actual size back to userspace. */
 	req.version = version;
 	req.size = copy_size;
 	if (copy_to_user((void __user *)arg, &req, sizeof(req)))
