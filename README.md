@@ -17,18 +17,20 @@ systems (Zen4 / Zen5) from Linux.
 ## Components
 
 | Component | Language | Description |
-|---|---|---|
-| `kernel/` | C | Out-of-tree kernel module exposing `/dev/amd_smn` for SMN register access and physical memory reads |
-| `src/` | Rust | Userspace CLI that reads and displays DDR5 timings, clocks, and DIMM info |
+| --- | --- | --- |
+| `kernel/` | C | Kernel module for SMN registers and SMU PM table reading |
+| `src/` | Rust | Userspace CLI for DDR5 timings, clocks, and DIMM info |
 
 The userspace program supports two backends for SMN access:
 
-1. **Kernel module** (`/dev/amd_smn`) — preferred, provides mutex-protected
-   access and supports SMU mailbox communication (required for clock
-   frequencies).
-2. **Sysfs PCI config space** (`/sys/bus/pci/devices/0000:00:00.0/config`) —
-   fallback, requires root, no locking. Clock frequencies are not available
-   with this backend.
+1. **Kernel module** (`/dev/amd_smn`) — preferred; provides
+   mutex-protected SMN access and a dedicated ioctl for reading the
+   SMU PM table (required for clock frequencies). All ioctls require
+   `CAP_SYS_ADMIN`.
+2. **Sysfs PCI config space**
+   (`/sys/bus/pci/devices/0000:00:00.0/config`) — fallback, requires
+   root, no locking. Clock frequencies are not available with this
+   backend.
 
 ## Building
 
@@ -116,23 +118,29 @@ probes up to 12 channels and reads the timing registers from each active one.
 
 ### Clock frequencies
 
-MCLK, FCLK, and UCLK are read from the SMU (System Management Unit) Power
-Management table. The program communicates with the SMU via its RSMU mailbox
-registers to obtain the PM table's DRAM base address, triggers a table transfer,
-then reads the clock values from physical memory via the kernel module's
-`AMD_SMN_IOC_READ_PHYS` ioctl. PM table layout varies by firmware version;
-offsets are derived from ZenStates-Core.
+MCLK, FCLK, and UCLK are read from the SMU (System Management Unit)
+Power Management table. The entire SMU mailbox flow runs inside the
+kernel module via the `AMD_SMN_IOC_READ_PM_TABLE` ioctl: get table
+version, obtain the 64-bit DRAM base address, transfer the table to
+DRAM, then `memremap` and copy to userspace. No arbitrary physical
+memory reads are exposed.
+
+PM table layout varies by firmware version; clock offsets are derived
+from ZenStates-Core.
 
 ### DIMM identification
 
-DIMM manufacturer and part number are read from SMBIOS Type 17 (Memory Device)
-entries exposed at `/sys/firmware/dmi/entries/17-*/raw`. Populated entries are
-matched to detected UMC channels in enumeration order. Rank (single/dual) and
-capacity are computed from UMC address configuration registers.
+DIMM manufacturer and part number are read from SMBIOS Type 17
+(Memory Device) entries using the
+[smbios-lib](https://crates.io/crates/smbios-lib) crate. Populated
+entries are matched to detected UMC channels in enumeration order.
+Rank (single/dual) and capacity are computed from UMC address
+configuration registers.
 
 The DDR5 register map and SMU access logic are derived from the
 [ZenTimings](https://github.com/irusanov/ZenTimings) /
-[ZenStates-Core](https://github.com/irusanov/ZenStates-Core) project.
+[ZenStates-Core](https://github.com/irusanov/ZenStates-Core)
+project.
 
 ## License
 
