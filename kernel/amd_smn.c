@@ -181,5 +181,5 @@ module_init(amd_smn_init);
 module_exit(amd_smn_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("ddr5timings");
+MODULE_AUTHOR("claude-4-opus");
 MODULE_DESCRIPTION("AMD SMN register access and physical memory reads");

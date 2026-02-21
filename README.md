@@ -1,4 +1,4 @@
-# ddr5timings
+# ddrs
 
 Read DDR5 memory timings, clock frequencies, and DIMM information on AMD AM5
 systems (Zen4 / Zen5) from Linux.
@@ -56,7 +56,7 @@ make CC=clang LLVM=1
 cargo build --release
 ```
 
-The binary is at `target/release/ddr5timings`.
+The binary is at `target/release/ddrs`.
 
 ## Usage
 
@@ -73,17 +73,17 @@ sudo insmod kernel/amd_smn.ko
 
 ```bash
 # With the kernel module loaded:
-sudo ./target/release/ddr5timings
+sudo ./target/release/ddrs
 
 # Or force a specific backend:
-sudo ./target/release/ddr5timings --backend sysfs
-sudo ./target/release/ddr5timings --backend module
+sudo ./target/release/ddrs --backend sysfs
+sudo ./target/release/ddrs --backend module
 
 # Show only a specific channel (0-indexed):
-sudo ./target/release/ddr5timings --channel 0
+sudo ./target/release/ddrs --channel 0
 
 # Skip clock frequency reading (useful with sysfs backend):
-sudo ./target/release/ddr5timings --no-clocks
+sudo ./target/release/ddrs --no-clocks
 ```
 
 ### Unload the kernel module

@@ -13,7 +13,7 @@ use clap::Parser;
 
 #[derive(Parser)]
 #[command(
-    name = "ddr5timings",
+    name = "ddrs",
     about = "Read DDR5 memory timings on AMD AM5 systems (Zen4/Zen5)"
 )]
 struct Cli {
