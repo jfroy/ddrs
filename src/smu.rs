@@ -1,30 +1,16 @@
 // Copyright 2026 Jean-Francois Roy
 // SPDX-License-Identifier: Apache-2.0
 
-//! SMU (System Management Unit) mailbox communication and PM table reading.
+//! PM (Power Management) table parsing for clock frequencies.
 //!
-//! The SMU exposes a mailbox interface through SMN registers. A command is sent
-//! by writing arguments, then the command ID, then polling for a response.
-//! The PM (Power Management) table is a binary blob the SMU writes to a
-//! DRAM address; it contains FCLK, UCLK, and MCLK as IEEE 754 floats at
-//! platform-specific offsets.
+//! The kernel module handles the SMU mailbox protocol and physical memory
+//! access internally. Userspace receives the raw PM table bytes and the
+//! table version, then extracts FCLK, UCLK, and MCLK at version-dependent
+//! offsets.
 
 use anyhow::{Result, bail};
 
 use crate::smn::SmnReader;
-
-// Zen4/Zen5 desktop RSMU mailbox addresses (shared across Raphael & GraniteRidge).
-const RSMU_ADDR_MSG: u32 = 0x03B1_0524;
-const RSMU_ADDR_RSP: u32 = 0x03B1_0570;
-const RSMU_ADDR_ARG: u32 = 0x03B1_0A40;
-
-const SMU_CMD_TRANSFER_TABLE: u32 = 0x3;
-const SMU_CMD_GET_DRAM_BASE: u32 = 0x4;
-const SMU_CMD_GET_TABLE_VERSION: u32 = 0x5;
-
-const SMU_RSP_OK: u32 = 0x01;
-const SMU_MAILBOX_ARGS: usize = 6;
-const SMU_TIMEOUT: u32 = 8192;
 
 /// Clock frequencies read from the PM table.
 #[derive(Debug, Clone, Default)]
@@ -32,71 +18,6 @@ pub struct Clocks {
     pub fclk_mhz: f32,
     pub uclk_mhz: f32,
     pub mclk_mhz: f32,
-}
-
-fn smu_wait_done(smn: &dyn SmnReader) -> Result<bool> {
-    for _ in 0..SMU_TIMEOUT {
-        let rsp = smn.read(RSMU_ADDR_RSP)?;
-        if rsp != 0 {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn smu_send_command(smn: &dyn SmnReader, cmd: u32, args: &mut [u32; SMU_MAILBOX_ARGS]) -> Result<u32> {
-    if !smu_wait_done(smn)? {
-        bail!("SMU mailbox not ready (timeout waiting for initial ready)");
-    }
-
-    smn.write(RSMU_ADDR_RSP, 0)?;
-
-    for (i, arg) in args.iter().enumerate() {
-        smn.write(RSMU_ADDR_ARG + (i as u32) * 4, *arg)?;
-    }
-
-    smn.write(RSMU_ADDR_MSG, cmd)?;
-
-    if !smu_wait_done(smn)? {
-        bail!("SMU command {cmd:#x} timed out");
-    }
-
-    let status = smn.read(RSMU_ADDR_RSP)?;
-
-    if status == SMU_RSP_OK {
-        for (i, arg) in args.iter_mut().enumerate() {
-            *arg = smn.read(RSMU_ADDR_ARG + (i as u32) * 4)?;
-        }
-    }
-
-    Ok(status)
-}
-
-fn get_table_version(smn: &dyn SmnReader) -> Result<u32> {
-    let mut args = [0u32; SMU_MAILBOX_ARGS];
-    let status = smu_send_command(smn, SMU_CMD_GET_TABLE_VERSION, &mut args)?;
-    if status != SMU_RSP_OK {
-        bail!("GetTableVersion failed (status {status:#x})");
-    }
-    Ok(args[0])
-}
-
-fn get_dram_base_address(smn: &dyn SmnReader) -> Result<u64> {
-    let mut args = [0u32; SMU_MAILBOX_ARGS];
-    let status = smu_send_command(smn, SMU_CMD_GET_DRAM_BASE, &mut args)?;
-    if status != SMU_RSP_OK {
-        bail!("GetDramBaseAddress failed (status {status:#x})");
-    }
-    Ok(args[0] as u64)
-}
-
-fn transfer_table_to_dram(smn: &dyn SmnReader) -> Result<()> {
-    let mut args = [0u32; SMU_MAILBOX_ARGS];
-    let status = smu_send_command(smn, SMU_CMD_TRANSFER_TABLE, &mut args)?;
-    if status != SMU_RSP_OK {
-        bail!("TransferTableToDram failed (status {status:#x})");
-    }
-    Ok(())
 }
 
 struct PmTableDef {
@@ -108,7 +29,6 @@ struct PmTableDef {
 
 fn get_pm_table_def(version: u32) -> Option<PmTableDef> {
     let prefix = version >> 16;
-    // Try exact version first, then fall back to generic per-family.
     match version {
         // Zen4 Desktop (Raphael) known versions
         0x540000..=0x540199 => Some(PmTableDef {
@@ -176,9 +96,11 @@ fn read_f32_le(data: &[u8], offset: usize) -> f32 {
 
 /// Read FCLK, UCLK, MCLK from the SMU PM table.
 ///
-/// Requires the kernel module backend (for physical memory reads).
+/// Requires the kernel module backend.
 pub fn read_clocks(smn: &dyn SmnReader) -> Result<Clocks> {
-    let version = get_table_version(smn)?;
+    // First pass: request with the maximum possible size to get the version.
+    let result = smn.read_pm_table(16 * 1024)?;
+    let version = result.version;
     eprintln!("PM table version: {version:#010x}");
 
     let def = get_pm_table_def(version)
@@ -187,16 +109,16 @@ pub fn read_clocks(smn: &dyn SmnReader) -> Result<Clocks> {
              clock frequencies cannot be read"
         ))?;
 
-    let dram_base = get_dram_base_address(smn)?;
-    if dram_base == 0 {
-        bail!("SMU returned DRAM base address 0");
-    }
-    eprintln!("PM table DRAM base: {dram_base:#010x}, size: {:#x}", def.table_size);
-
-    transfer_table_to_dram(smn)?;
-
-    let mut table = vec![0u8; def.table_size];
-    smn.read_phys(dram_base, &mut table)?;
+    // Use the data we already have if it's large enough, otherwise re-read.
+    let table = if result.data.len() >= def.table_size {
+        result.data
+    } else {
+        bail!(
+            "PM table too small: got {} bytes but need {} for version {version:#010x}",
+            result.data.len(),
+            def.table_size
+        );
+    };
 
     let fclk = read_f32_le(&table, def.offset_fclk);
     let uclk = read_f32_le(&table, def.offset_uclk);

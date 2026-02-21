@@ -18,7 +18,7 @@ alwaysApply: true
 - `smn.rs` — `SmnReader` trait and two backends: `KernelModuleReader` (ioctl) and `SysfsPciReader` (sysfs pread/pwrite)
 - `channels.rs` — UMC channel probing, rank detection, capacity calculation, DMI matching
 - `timings.rs` — DDR5 register map and timing extraction from SMN registers
-- `smu.rs` — SMU mailbox protocol and PM table parsing for MCLK/FCLK/UCLK
+- `smu.rs` — PM table version-dependent parsing for MCLK/FCLK/UCLK (mailbox is in kernel)
 - `dmi.rs` — SMBIOS Type 17 parsing from `/sys/firmware/dmi/entries/17-*/raw`
 - `display.rs` — Terminal output formatting
 
@@ -28,15 +28,14 @@ alwaysApply: true
 |-------|-----------|--------|---------|
 | `AMD_SMN_IOC_READ` (1) | IOWR | `amd_smn_req` | Read 32-bit SMN register |
 | `AMD_SMN_IOC_WRITE` (2) | IOW | `amd_smn_req` | Write 32-bit SMN register |
-| `AMD_SMN_IOC_READ_PHYS` (3) | IOW | `amd_phys_req` | Copy physical memory to userspace (max 64 KiB) |
+| `AMD_SMN_IOC_READ_PM_TABLE` (4) | IOWR | `amd_pm_table_req` | SMU mailbox + memremap PM table to userspace |
 
 ## Key technical details
 
 - SMN registers: accessed via PCI config offset 0xC4 (address) / 0xC8 (data) on AMD host bridge (0000:00:00.0)
 - UMC channels: offset = `channel_index << 20`, timing registers at `0x50xxx` within each channel
-- SMU mailbox: RSMU registers for sending commands, reading responses; used to get PM table DRAM base address
-- PM table: firmware version-dependent layout; clock offsets derived from ZenStates-Core
-- Physical memory reads: kernel module uses `memremap()` to safely map DRAM for PM table access
+- SMU mailbox: handled entirely in kernel; RSMU registers for commands/responses to get PM table version, DRAM base, and trigger transfer
+- PM table: kernel reads it from physical DRAM via `memremap()` and copies to userspace; userspace only parses version-dependent clock offsets
 - SMBIOS: Type 17 records matched to UMC DIMMs in enumeration order
 
 ## Reference projects
