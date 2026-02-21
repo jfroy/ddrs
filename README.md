@@ -1,25 +1,34 @@
 # ddr5timings
 
-Read DDR5 memory timings on AMD AM5 systems (Zen4 / Zen5) from Linux.
+Read DDR5 memory timings, clock frequencies, and DIMM information on AMD AM5
+systems (Zen4 / Zen5) from Linux.
 
-Timings are read from the memory controller's SMN (System Management Network)
-registers, accessed indirectly through PCI config space on the AMD host bridge.
-The DDR5 register map is derived from the
-[ZenTimings](https://github.com/irusanov/ZenTimings) /
-[ZenStates-Core](https://github.com/irusanov/ZenStates-Core) project.
+## Features
+
+- **DDR5 timings** — primary, secondary, tertiary, refresh, PHY, preamble, and
+  mode register timings from UMC SMN registers
+- **Clock frequencies** — MCLK, FCLK, and UCLK read from the SMU Power
+  Management table, plus computed FCLK:MCLK ratio
+- **Channel & DIMM info** — per-channel capacity, per-DIMM rank (SR/DR),
+  capacity, and model string (manufacturer + part number from SMBIOS)
+- **Automatic backend selection** — prefers the kernel module when available,
+  falls back to sysfs PCI config space
 
 ## Components
 
 | Component | Language | Description |
 |---|---|---|
-| `kernel/` | C | Out-of-tree kernel module exposing `/dev/amd_smn` for SMN reads |
-| `src/` | Rust | Userspace CLI that reads and displays DDR5 timings |
+| `kernel/` | C | Out-of-tree kernel module exposing `/dev/amd_smn` for SMN register access and physical memory reads |
+| `src/` | Rust | Userspace CLI that reads and displays DDR5 timings, clocks, and DIMM info |
 
 The userspace program supports two backends for SMN access:
 
-1. **Kernel module** (`/dev/amd_smn`) — preferred, provides mutex-protected access.
+1. **Kernel module** (`/dev/amd_smn`) — preferred, provides mutex-protected
+   access and supports SMU mailbox communication (required for clock
+   frequencies).
 2. **Sysfs PCI config space** (`/sys/bus/pci/devices/0000:00:00.0/config`) —
-   fallback, requires root, no locking.
+   fallback, requires root, no locking. Clock frequencies are not available
+   with this backend.
 
 ## Building
 
@@ -72,6 +81,9 @@ sudo ./target/release/ddr5timings --backend module
 
 # Show only a specific channel (0-indexed):
 sudo ./target/release/ddr5timings --channel 0
+
+# Skip clock frequency reading (useful with sysfs backend):
+sudo ./target/release/ddr5timings --no-clocks
 ```
 
 ### Unload the kernel module
@@ -89,16 +101,38 @@ Both require an AM5 motherboard with DDR5 memory.
 
 ## How it works
 
+### SMN register access
+
 AMD Zen processors expose memory controller configuration through the SMN
 (System Management Network) address space. SMN registers are accessed
 indirectly via PCI config space on the host bridge (bus 0, device 0, function 0):
 
 1. Write the 32-bit SMN address to PCI config offset `0xC4`
-2. Read the 32-bit value from PCI config offset `0xC8`
+2. Read/write the 32-bit value at PCI config offset `0xC8`
 
 DDR5 timing registers live in the `0x50xxx` SMN range. Each UMC (Unified Memory
 Controller) channel is at an offset of `channel_index << 20`. The program
 probes up to 12 channels and reads the timing registers from each active one.
+
+### Clock frequencies
+
+MCLK, FCLK, and UCLK are read from the SMU (System Management Unit) Power
+Management table. The program communicates with the SMU via its RSMU mailbox
+registers to obtain the PM table's DRAM base address, triggers a table transfer,
+then reads the clock values from physical memory via the kernel module's
+`AMD_SMN_IOC_READ_PHYS` ioctl. PM table layout varies by firmware version;
+offsets are derived from ZenStates-Core.
+
+### DIMM identification
+
+DIMM manufacturer and part number are read from SMBIOS Type 17 (Memory Device)
+entries exposed at `/sys/firmware/dmi/entries/17-*/raw`. Populated entries are
+matched to detected UMC channels in enumeration order. Rank (single/dual) and
+capacity are computed from UMC address configuration registers.
+
+The DDR5 register map and SMU access logic are derived from the
+[ZenTimings](https://github.com/irusanov/ZenTimings) /
+[ZenStates-Core](https://github.com/irusanov/ZenStates-Core) project.
 
 ## License
 
