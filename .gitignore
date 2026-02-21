@@ -1,0 +1,11 @@
+/target
+
+# Kernel module build artifacts
+kernel/*.ko
+kernel/*.o
+kernel/*.mod
+kernel/*.mod.c
+kernel/modules.order
+kernel/Module.symvers
+kernel/.*.cmd
+kernel/.tmp_versions/
