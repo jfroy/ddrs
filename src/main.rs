@@ -10,6 +10,7 @@ mod timings;
 
 use anyhow::{Result, bail};
 use clap::Parser;
+use nix::sys::signal::{self, SigHandler, Signal};
 
 #[derive(Parser)]
 #[command(
@@ -39,6 +40,9 @@ enum Backend {
 }
 
 fn main() -> Result<()> {
+    // Restore default SIGPIPE handling so piping to `head` etc. works.
+    unsafe { signal::signal(Signal::SIGPIPE, SigHandler::SigDfl) }.ok();
+
     let cli = Cli::parse();
 
     let reader: Box<dyn smn::SmnReader> = match cli.backend {

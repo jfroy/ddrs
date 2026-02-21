@@ -7,4 +7,4 @@ license = "Apache-2.0"
 [dependencies]
 anyhow = "1.0.102"
 clap = { version = "4.5.60", features = ["derive"] }
-nix = { version = "0.31.1", features = ["ioctl"] }
+nix = { version = "0.31.1", features = ["ioctl", "signal"] }
