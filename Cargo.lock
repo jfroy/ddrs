@@ -145,6 +145,8 @@ dependencies = [
  "anyhow",
  "clap",
  "nix",
+ "serde",
+ "serde_json",
  "smbios-lib",
 ]
 

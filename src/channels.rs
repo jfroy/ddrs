@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::{Result, bail};
+use serde::Serialize;
 
 use crate::dmi;
 use crate::smn::SmnReader;
@@ -17,7 +18,8 @@ fn bits(val: u32, hi: u32, lo: u32) -> u32 {
     (val >> lo) & ((1 << (hi - lo + 1)) - 1)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum MemType {
     Ddr4,
     Ddr5,
@@ -50,7 +52,8 @@ impl MemType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Rank {
     Single,
     Dual,
@@ -65,7 +68,7 @@ impl std::fmt::Display for Rank {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Dimm {
     pub slot: String,
     pub rank: Rank,
@@ -73,9 +76,10 @@ pub struct Dimm {
     pub model: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Channel {
     pub index: u32,
+    #[serde(skip)]
     pub offset: u32,
     pub dimms: Vec<Dimm>,
 }

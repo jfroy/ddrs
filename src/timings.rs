@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::Result;
+use serde::Serialize;
 
 use crate::smn::SmnReader;
 
@@ -9,7 +10,8 @@ fn bits(val: u32, hi: u32, lo: u32) -> u32 {
     (val >> lo) & ((1 << (hi - lo + 1)) - 1)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum BankRefreshMode {
     Normal,
     Fgr,
@@ -31,7 +33,7 @@ impl std::fmt::Display for BankRefreshMode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct NitroSettings {
     pub rx_data: u8,
     pub tx_data: u8,
@@ -45,7 +47,7 @@ impl std::fmt::Display for NitroSettings {
 }
 
 /// All DDR5 timing parameters read from the memory controller.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Ddr5Timings {
     pub ratio: f32,
     pub frequency: f32,

@@ -9,11 +9,12 @@
 //! offsets.
 
 use anyhow::{Result, bail};
+use serde::Serialize;
 
 use crate::smn::SmnReader;
 
 /// Clock frequencies read from the PM table.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Clocks {
     pub fclk_mhz: f32,
     pub uclk_mhz: f32,
