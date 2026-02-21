@@ -3,7 +3,9 @@
 
 mod channels;
 mod display;
+mod dmi;
 mod smn;
+mod smu;
 mod timings;
 
 use anyhow::{Result, bail};
@@ -22,6 +24,10 @@ struct Cli {
     /// Only show timings for a specific channel index (0-based).
     #[arg(long)]
     channel: Option<u32>,
+
+    /// Skip reading FCLK/UCLK/MCLK from the SMU PM table.
+    #[arg(long)]
+    no_clocks: bool,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -50,9 +56,27 @@ fn main() -> Result<()> {
         );
     }
 
+    let total_cap: u64 = detected_channels.iter().map(|c| c.total_capacity_bytes()).sum();
     println!("Memory type: {mem_type}");
     println!("Active channels: {}", detected_channels.len());
+    println!("Total capacity: {}", channels::format_capacity(total_cap));
     println!();
+
+    if !cli.no_clocks {
+        match smu::read_clocks(reader.as_ref()) {
+            Ok(clocks) => {
+                println!("  ── Clocks ───────────────────────────────────");
+                display::print_clocks(&clocks);
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: could not read clocks from SMU PM table: {e:#}\n\
+                     (use --no-clocks to skip, or ensure the amd_smn kernel module is loaded)"
+                );
+                println!();
+            }
+        }
+    }
 
     for ch in &detected_channels {
         if let Some(filter) = cli.channel {

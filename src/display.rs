@@ -1,7 +1,8 @@
 // Copyright 2026 Jean-Francois Roy
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::channels::Channel;
+use crate::channels::{Channel, format_capacity};
+use crate::smu::Clocks;
 use crate::timings::Ddr5Timings;
 
 fn enabled_disabled(v: bool) -> &'static str {
@@ -12,16 +13,37 @@ fn cmd_rate(v: bool) -> &'static str {
     if v { "2T" } else { "1T" }
 }
 
-pub fn print_channel(channel: &Channel, t: &Ddr5Timings) {
-    let dimm_slots: Vec<&str> = channel.dimms.iter().map(|d| d.slot.as_str()).collect();
+pub fn print_clocks(clocks: &Clocks) {
+    println!("  MCLK             {:.1} MHz", clocks.mclk_mhz);
+    println!("  FCLK             {:.1} MHz", clocks.fclk_mhz);
+    println!("  UCLK             {:.1} MHz", clocks.uclk_mhz);
+    let ratio = if clocks.mclk_mhz > 0.0 {
+        format!("1:{:.0}", (clocks.fclk_mhz / clocks.mclk_mhz).round())
+    } else {
+        "N/A".to_string()
+    };
+    println!("  FCLK:MCLK        {ratio}");
+    println!();
+}
 
+pub fn print_channel(channel: &Channel, t: &Ddr5Timings) {
     println!("══════════════════════════════════════════════════");
     println!(
-        "  Channel {} (UMC{})  Slots: {}",
+        "  Channel {} (UMC{})  Total: {}",
         char::from(b'A' + channel.index as u8),
         channel.index,
-        dimm_slots.join(", ")
+        format_capacity(channel.total_capacity_bytes()),
     );
+    for d in &channel.dimms {
+        let model = if d.model.is_empty() { "Unknown" } else { &d.model };
+        println!(
+            "    {} ({}, {}) {}",
+            d.slot,
+            d.rank,
+            format_capacity(d.capacity_bytes),
+            model,
+        );
+    }
     println!("══════════════════════════════════════════════════");
     println!();
 

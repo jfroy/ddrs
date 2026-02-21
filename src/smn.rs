@@ -10,6 +10,8 @@ use anyhow::{Context, Result, bail};
 // Must match kernel/amd_smn.h
 const AMD_SMN_IOC_MAGIC: u8 = b'S';
 const AMD_SMN_IOC_READ_NR: u8 = 1;
+const AMD_SMN_IOC_WRITE_NR: u8 = 2;
+const AMD_SMN_IOC_READ_PHYS_NR: u8 = 3;
 
 #[repr(C)]
 #[derive(Default)]
@@ -18,16 +20,32 @@ struct AmdSmnReq {
     value: u32,
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct AmdPhysReq {
+    address: u64,
+    size: u32,
+    _pad: u32,
+    buffer: u64,
+}
+
 nix::ioctl_readwrite!(smn_ioctl_read, AMD_SMN_IOC_MAGIC, AMD_SMN_IOC_READ_NR, AmdSmnReq);
+nix::ioctl_write_ptr!(smn_ioctl_write, AMD_SMN_IOC_MAGIC, AMD_SMN_IOC_WRITE_NR, AmdSmnReq);
+nix::ioctl_write_ptr!(smn_ioctl_read_phys, AMD_SMN_IOC_MAGIC, AMD_SMN_IOC_READ_PHYS_NR, AmdPhysReq);
 
 const SMN_PCI_ADDR_OFFSET: u64 = 0xC4;
 const SMN_PCI_DATA_OFFSET: u64 = 0xC8;
 
 pub trait SmnReader {
     fn read(&self, address: u32) -> Result<u32>;
+    fn write(&self, address: u32, value: u32) -> Result<()>;
+
+    /// Read a block of physical memory into `buf`.
+    /// Only supported by the kernel module backend.
+    fn read_phys(&self, phys_addr: u64, buf: &mut [u8]) -> Result<()>;
 }
 
-/// Reads SMN registers through the amd_smn kernel module (/dev/amd_smn).
+/// Reads/writes SMN registers through the amd_smn kernel module (/dev/amd_smn).
 pub struct KernelModuleReader {
     file: File,
 }
@@ -53,12 +71,36 @@ impl SmnReader for KernelModuleReader {
             .with_context(|| format!("SMN read ioctl failed for address {address:#010x}"))?;
         Ok(req.value)
     }
+
+    fn write(&self, address: u32, value: u32) -> Result<()> {
+        let req = AmdSmnReq { address, value };
+        unsafe { smn_ioctl_write(self.file.as_raw_fd(), &req) }
+            .with_context(|| format!("SMN write ioctl failed for address {address:#010x}"))?;
+        Ok(())
+    }
+
+    fn read_phys(&self, phys_addr: u64, buf: &mut [u8]) -> Result<()> {
+        let req = AmdPhysReq {
+            address: phys_addr,
+            size: buf.len() as u32,
+            _pad: 0,
+            buffer: buf.as_mut_ptr() as u64,
+        };
+        unsafe { smn_ioctl_read_phys(self.file.as_raw_fd(), &req) }
+            .with_context(|| {
+                format!(
+                    "physical memory read ioctl failed at {phys_addr:#x} ({} bytes)",
+                    buf.len()
+                )
+            })?;
+        Ok(())
+    }
 }
 
-/// Reads SMN registers directly through sysfs PCI config space.
+/// Reads/writes SMN registers directly through sysfs PCI config space.
 ///
-/// This writes the SMN address to PCI config offset 0xC4 and reads the
-/// result from offset 0xC8 on the AMD host bridge (typically 0000:00:00.0).
+/// This writes the SMN address to PCI config offset 0xC4 and reads/writes
+/// through offset 0xC8 on the AMD host bridge (typically 0000:00:00.0).
 /// Requires root or CAP_SYS_RAWIO.
 pub struct SysfsPciReader {
     file: File,
@@ -98,11 +140,35 @@ impl SmnReader for SysfsPciReader {
 
         Ok(u32::from_le_bytes(data_bytes))
     }
+
+    fn write(&self, address: u32, value: u32) -> Result<()> {
+        use std::os::unix::fs::FileExt;
+
+        let addr_bytes = address.to_le_bytes();
+        self.file
+            .write_at(&addr_bytes, SMN_PCI_ADDR_OFFSET)
+            .with_context(|| {
+                format!("pwrite to PCI config offset {SMN_PCI_ADDR_OFFSET:#x} failed")
+            })?;
+
+        let data_bytes = value.to_le_bytes();
+        self.file
+            .write_at(&data_bytes, SMN_PCI_DATA_OFFSET)
+            .with_context(|| {
+                format!("pwrite to PCI config offset {SMN_PCI_DATA_OFFSET:#x} failed")
+            })?;
+
+        Ok(())
+    }
+
+    fn read_phys(&self, _phys_addr: u64, _buf: &mut [u8]) -> Result<()> {
+        bail!("physical memory reads are not supported via sysfs PCI config space; \
+               use the amd_smn kernel module instead")
+    }
 }
 
 fn find_amd_host_bridge_config() -> Result<String> {
     let base = "/sys/bus/pci/devices";
-    // Try the common location first: domain 0, bus 0, device 0, function 0.
     let candidate = format!("{base}/0000:00:00.0/config");
     if Path::new(&candidate).exists() {
         let vendor_path = format!("{base}/0000:00:00.0/vendor");
