@@ -2,36 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fs::{File, OpenOptions};
-use std::os::unix::io::AsRawFd;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-
-// Must match kernel/amd_smn.h
-const AMD_SMN_IOC_MAGIC: u8 = b'S';
-const AMD_SMN_IOC_READ_NR: u8 = 1;
-const AMD_SMN_IOC_READ_PM_TABLE_NR: u8 = 4;
-
-#[repr(C)]
-#[derive(Default)]
-struct AmdSmnReq {
-    address: u32,
-    value: u32,
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct AmdPmTableReq {
-    version: u32,
-    size: u32,
-    buffer: u64,
-}
-
-nix::ioctl_readwrite!(smn_ioctl_read, AMD_SMN_IOC_MAGIC, AMD_SMN_IOC_READ_NR, AmdSmnReq);
-nix::ioctl_readwrite!(smn_ioctl_read_pm_table, AMD_SMN_IOC_MAGIC, AMD_SMN_IOC_READ_PM_TABLE_NR, AmdPmTableReq);
-
-const SMN_PCI_ADDR_OFFSET: u64 = 0xC4;
-const SMN_PCI_DATA_OFFSET: u64 = 0xC8;
 
 /// Result of reading the SMU PM table.
 pub struct PmTableResult {
@@ -42,53 +16,94 @@ pub struct PmTableResult {
 pub trait SmnReader {
     fn read(&self, address: u32) -> Result<u32>;
 
-    /// Read the SMU PM table. The kernel module handles the entire SMU mailbox
-    /// flow and returns the table version alongside the data.
-    /// Only supported by the kernel module backend.
+    /// Read the SMU PM table from ryzen_smu sysfs.
+    /// Only supported by the ryzen_smu backend.
     fn read_pm_table(&self, max_size: usize) -> Result<PmTableResult>;
 }
 
-/// Reads/writes SMN registers through the amd_smn kernel module (/dev/amd_smn).
-pub struct KernelModuleReader {
-    file: File,
+const RYZEN_SMU_BASE: &str = "/sys/kernel/ryzen_smu_drv";
+
+/// Reads SMN registers and PM table through the ryzen_smu kernel module sysfs.
+///
+/// Uses `/sys/kernel/ryzen_smu_drv/smn` for SMN access and the pm_table* files
+/// for clock frequencies. Requires the [ryzen_smu](https://github.com/amkillam/ryzen_smu)
+/// module to be loaded.
+pub struct RyzenSmuReader {
+    smn_file: File,
 }
 
-impl KernelModuleReader {
+impl RyzenSmuReader {
     pub fn open() -> Result<Self> {
-        let file = OpenOptions::new()
+        let smn_path = format!("{RYZEN_SMU_BASE}/smn");
+        let smn_file = OpenOptions::new()
             .read(true)
             .write(true)
-            .open("/dev/amd_smn")
-            .context("failed to open /dev/amd_smn (is the amd_smn module loaded?)")?;
-        Ok(Self { file })
+            .open(&smn_path)
+            .with_context(|| {
+                format!(
+                    "failed to open {smn_path} (is the ryzen_smu module loaded?)"
+                )
+            })?;
+        Ok(Self { smn_file })
+    }
+
+    fn read_smn(&self, address: u32) -> Result<u32> {
+        let mut file = &self.smn_file;
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(&address.to_le_bytes())
+            .with_context(|| format!("SMN write failed for address {address:#010x}"))?;
+        file.seek(SeekFrom::Start(0))?;
+        let mut buf = [0u8; 4];
+        file.read_exact(&mut buf)
+            .with_context(|| format!("SMN read failed for address {address:#010x}"))?;
+        Ok(u32::from_le_bytes(buf))
+    }
+
+    fn read_pm_table_inner(&self, max_size: usize) -> Result<PmTableResult> {
+        let version_path = format!("{RYZEN_SMU_BASE}/pm_table_version");
+        let size_path = format!("{RYZEN_SMU_BASE}/pm_table_size");
+        let table_path = format!("{RYZEN_SMU_BASE}/pm_table");
+
+        if !Path::new(&version_path).exists() {
+            bail!(
+                "PM table not available (pm_table_version missing). \
+                 ryzen_smu may not support PM table on this platform."
+            );
+        }
+
+        let version = {
+            let mut f = File::open(&version_path)
+                .with_context(|| format!("failed to open {version_path}"))?;
+            let mut buf = [0u8; 4];
+            f.read_exact(&mut buf)?;
+            u32::from_le_bytes(buf)
+        };
+
+        let size = {
+            let mut f = File::open(&size_path)
+                .with_context(|| format!("failed to open {size_path}"))?;
+            let mut buf = [0u8; 8];
+            f.read_exact(&mut buf)?;
+            u64::from_le_bytes(buf) as usize
+        };
+
+        let mut data = vec![0u8; size.min(max_size)];
+        let mut f = File::open(&table_path)
+            .with_context(|| format!("failed to open {table_path}"))?;
+        let n = f.read(&mut data)?;
+        data.truncate(n);
+
+        Ok(PmTableResult { version, data })
     }
 }
 
-impl SmnReader for KernelModuleReader {
+impl SmnReader for RyzenSmuReader {
     fn read(&self, address: u32) -> Result<u32> {
-        let mut req = AmdSmnReq {
-            address,
-            value: 0,
-        };
-        unsafe { smn_ioctl_read(self.file.as_raw_fd(), &mut req) }
-            .with_context(|| format!("SMN read ioctl failed for address {address:#010x}"))?;
-        Ok(req.value)
+        self.read_smn(address)
     }
 
     fn read_pm_table(&self, max_size: usize) -> Result<PmTableResult> {
-        let mut buf = vec![0u8; max_size];
-        let mut req = AmdPmTableReq {
-            version: 0,
-            size: max_size as u32,
-            buffer: buf.as_mut_ptr() as u64,
-        };
-        unsafe { smn_ioctl_read_pm_table(self.file.as_raw_fd(), &mut req) }
-            .context("PM table read ioctl failed")?;
-        buf.truncate(req.size as usize);
-        Ok(PmTableResult {
-            version: req.version,
-            data: buf,
-        })
+        self.read_pm_table_inner(max_size)
     }
 }
 
@@ -100,6 +115,9 @@ impl SmnReader for KernelModuleReader {
 pub struct SysfsPciReader {
     file: File,
 }
+
+const SMN_PCI_ADDR_OFFSET: u64 = 0xC4;
+const SMN_PCI_DATA_OFFSET: u64 = 0xC8;
 
 impl SysfsPciReader {
     pub fn open() -> Result<Self> {
@@ -137,8 +155,10 @@ impl SmnReader for SysfsPciReader {
     }
 
     fn read_pm_table(&self, _max_size: usize) -> Result<PmTableResult> {
-        bail!("PM table reading is not supported via sysfs PCI config space; \
-               use the amd_smn kernel module instead")
+        bail!(
+            "PM table reading is not supported via sysfs PCI config space; \
+             use the ryzen_smu kernel module instead"
+        )
     }
 }
 
@@ -159,11 +179,13 @@ fn find_amd_host_bridge_config() -> Result<String> {
     );
 }
 
-/// Auto-detect the best available SMN reader: kernel module first, then sysfs.
+/// Auto-detect the best available SMN reader: ryzen_smu first, then sysfs.
 pub fn auto_detect() -> Result<Box<dyn SmnReader>> {
-    if let Ok(reader) = KernelModuleReader::open() {
-        eprintln!("Using amd_smn kernel module");
-        return Ok(Box::new(reader));
+    if Path::new(&format!("{RYZEN_SMU_BASE}/smn")).exists() {
+        if let Ok(reader) = RyzenSmuReader::open() {
+            eprintln!("Using ryzen_smu kernel module");
+            return Ok(Box::new(reader));
+        }
     }
     if let Ok(reader) = SysfsPciReader::open() {
         eprintln!("Using sysfs PCI config space (direct)");
@@ -171,6 +193,6 @@ pub fn auto_detect() -> Result<Box<dyn SmnReader>> {
     }
     bail!(
         "no SMN access method available.\n\
-         Either load the amd_smn kernel module or run as root for sysfs access."
+         Either load the ryzen_smu kernel module or run as root for sysfs access."
     );
 }

@@ -9,33 +9,31 @@ alwaysApply: true
 
 | Path | Language | License | Description |
 |------|----------|---------|-------------|
-| `kernel/amd_smn.c`, `kernel/amd_smn.h` | C | GPL-2.0-only | Out-of-tree Linux kernel module exposing `/dev/amd_smn` |
 | `src/` | Rust (edition 2024) | Apache-2.0 | Userspace CLI binary |
 
 ### Rust modules
 
 - `main.rs` — CLI entry point (clap), backend selection, orchestration
-- `smn.rs` — `SmnReader` trait and two backends: `KernelModuleReader` (ioctl) and `SysfsPciReader` (sysfs pread/pwrite)
+- `smn.rs` — `SmnReader` trait and two backends: `RyzenSmuReader` (ryzen_smu sysfs) and `SysfsPciReader` (sysfs pread/pwrite)
 - `channels.rs` — UMC channel probing, rank detection, capacity calculation, DMI matching
 - `timings.rs` — DDR5 register map and timing extraction from SMN registers
-- `smu.rs` — PM table version-dependent parsing for MCLK/FCLK/UCLK (mailbox is in kernel)
+- `smu.rs` — PM table version-dependent parsing for MCLK/FCLK/UCLK
 - `dmi.rs` — SMBIOS Type 17 parsing from `/sys/firmware/dmi/entries/17-*/raw`
 - `display.rs` — Terminal output formatting
 
-### Kernel module ioctls
+### ryzen_smu sysfs interface
 
-| ioctl | Direction | Struct | Purpose |
-|-------|-----------|--------|---------|
-| `AMD_SMN_IOC_READ` (1) | IOWR | `amd_smn_req` | Read 32-bit SMN register |
-| `AMD_SMN_IOC_WRITE` (2) | IOW | `amd_smn_req` | Write 32-bit SMN register |
-| `AMD_SMN_IOC_READ_PM_TABLE` (4) | IOWR | `amd_pm_table_req` | SMU mailbox + memremap PM table to userspace |
+Uses [ryzen_smu](https://github.com/amkillam/ryzen_smu) at `/sys/kernel/ryzen_smu_drv/`:
+
+- `smn` — write 4 bytes (address) to read, read 4 bytes for result; write 8 bytes (addr+value) to write
+- `pm_table`, `pm_table_version`, `pm_table_size` — PM table for clock frequencies
 
 ## Key technical details
 
 - SMN registers: accessed via PCI config offset 0xC4 (address) / 0xC8 (data) on AMD host bridge (0000:00:00.0)
 - UMC channels: offset = `channel_index << 20`, timing registers at `0x50xxx` within each channel
-- SMU mailbox: handled entirely in kernel; RSMU registers for commands/responses to get PM table version, DRAM base, and trigger transfer
-- PM table: kernel reads it from physical DRAM via `memremap()` and copies to userspace; userspace only parses version-dependent clock offsets
+- SMU mailbox: handled by ryzen_smu kernel module; RSMU registers for commands/responses
+- PM table: ryzen_smu reads from physical DRAM and exposes via sysfs; userspace parses version-dependent clock offsets
 - SMBIOS: Type 17 records matched to UMC DIMMs in enumeration order
 
 ## Reference projects

@@ -38,8 +38,8 @@ struct Cli {
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Backend {
-    /// Use the amd_smn kernel module (/dev/amd_smn).
-    Module,
+    /// Use the ryzen_smu kernel module (sysfs).
+    RyzenSmu,
     /// Use sysfs PCI config space directly (requires root).
     Sysfs,
 }
@@ -69,7 +69,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let reader: Box<dyn smn::SmnReader> = match cli.backend {
-        Some(Backend::Module) => Box::new(smn::KernelModuleReader::open()?),
+        Some(Backend::RyzenSmu) => Box::new(smn::RyzenSmuReader::open()?),
         Some(Backend::Sysfs) => Box::new(smn::SysfsPciReader::open()?),
         None => smn::auto_detect()?,
     };
@@ -89,7 +89,7 @@ fn main() -> Result<()> {
             Err(e) => {
                 eprintln!(
                     "Warning: could not read clocks from SMU PM table: {e:#}\n\
-                     (use --no-clocks to skip, or ensure the amd_smn kernel module is loaded)"
+                     (use --no-clocks to skip, or ensure the ryzen_smu kernel module is loaded)"
                 );
                 None
             }
